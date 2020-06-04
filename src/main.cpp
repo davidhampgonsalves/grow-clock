@@ -12,13 +12,11 @@ const char * pass = "2167ACD3E6AF"; // I don't mind people using my wifi if they
 
 const long utcOffsetInSeconds = 3600;
 
-const unsigned long MAX_SLEEP_DURATION = 70 * 60;
-const int SERVO_PIN = D4;
+const unsigned long MAX_SLEEP_SEC = 3 * 60 * 60;
+const int SERVO_PIN = D5;
 
-int MOVE_DELAY = 90;
-
-const unsigned long DAY_START = ((6 * 60) + 50) * 60;
-const unsigned long DAY_END = 19 * 60 * 60;
+const unsigned long DAY_START = ((7 * 60) + 50) * 60;
+const unsigned long DAY_END = 20 * 60 * 60;
 
 IPAddress timeServerIP;
 const char* ntpServerName = "time.nist.gov";
@@ -42,14 +40,19 @@ bool isDayTime(unsigned long c) {
 
   Serial.print("is day time? ");
   Serial.print(isDayTime);
-  Serial.print(" @ ");
+  Serial.print(" b/c ");
   Serial.print(c);
+  Serial.print(" (");
+  Serial.print(DAY_START);
+  Serial.print(", ");
+  Serial.print(DAY_END);
+  Serial.print(")");
   Serial.println(" seconds.");
 
   return isDayTime;
 }
 
-void moveTo(int from, int to) {
+void moveTo(int to) {
   servo.attach(SERVO_PIN);
   servo.write(to);
   delay(1000);
@@ -106,6 +109,12 @@ unsigned long fetchNTPTime() {
 
 void setupSystemTime() {
   if(ESP.getResetInfoPtr()->reason != 5) {
+    moveTo(70);
+
+    //Wake up wifi-chip from sleep
+    WiFi.forceSleepWake();
+    yield();
+
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, pass);
     Serial.print("connecting to wifi");
@@ -130,38 +139,44 @@ void setupSystemTime() {
 
 void setup() {
   Serial.begin(9600);
-  delay(200);
+  delay(1000);
+
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
 
   system_rtc_mem_read(64, &state, sizeof(state));
-
   setupSystemTime();
 
   // if there was a day / night change between last run and now then update clock position
   unsigned long current = toSecondsInDay(now());
-  if(isDayTime(toSecondsInDay(state.lastTime)) != isDayTime(current)) {
-    if(isDayTime(current)) {
+  bool isCurrentlyDayTime = isDayTime(current);
+  if(isDayTime(toSecondsInDay(state.lastTime)) != isCurrentlyDayTime) {
+    if(isCurrentlyDayTime) {
       Serial.println("its day time.");
-      moveTo(110, 30);
+      moveTo(30);
     } else {
       Serial.println("its night time.");
-      moveTo(30, 110);
+      moveTo(110);
     }
   }
 
   unsigned long secToSleep;
   if(current >= DAY_END)
-    secToSleep = MAX_SLEEP_DURATION;
+    secToSleep = MAX_SLEEP_SEC;
   else if(current >= DAY_START)
     secToSleep = DAY_END - current;
   else
     secToSleep = DAY_START - current;
 
-  state.sleepDurationInSeconds = secToSleep < MAX_SLEEP_DURATION ? secToSleep : MAX_SLEEP_DURATION;
+  if(secToSleep <= 0) // prevent sleeping indefinately
+    secToSleep = 1;
+
+  state.sleepDurationInSeconds = secToSleep < MAX_SLEEP_SEC ? secToSleep : MAX_SLEEP_SEC;
 
   Serial.print("sleeping for ");
-  Serial.print(state.sleepDurationInSeconds);
+  Serial.print(state.sleepDurationInSeconds * 1000000);
   Serial.print(" / ");
-  Serial.print(MAX_SLEEP_DURATION);
+  Serial.print(MAX_SLEEP_SEC * 1000000);
   Serial.println(" seconds.");
 
   state.lastTime = now();
@@ -172,7 +187,11 @@ void setup() {
     Serial.println(state.sleepDurationInSeconds);
 
   system_rtc_mem_write(64, &state, sizeof(state));
-  ESP.deepSleep(state.sleepDurationInSeconds * 1000 * 1000);
+
+  digitalWrite(LED_BUILTIN, HIGH);
+
+  ESP.deepSleep(state.sleepDurationInSeconds * 1e6, WAKE_RF_DISABLED);
+  yield();
 }
 
 void loop() { }
